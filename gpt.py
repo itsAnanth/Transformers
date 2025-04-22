@@ -91,6 +91,16 @@ class Head(nn.Module):
         out = wei @ v # (B, T, T) @ (B, T, head_size) ---> (B, T, head_size)
         return out
         
+    
+class MultiHeadAttention(nn.Module):
+    """ Multiple heads of self-attention in parallel """
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        
+        self.heads = nn.ModuleList([Head(n_embed, head_size, block_size) for _ in range(num_heads)])
+        
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1)
 
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
@@ -104,9 +114,11 @@ class BigramLanguageModel(nn.Module):
         # each position in a block has a unique position of n_embed size
         self.position_embedding_table = nn.Embedding(block_size, n_embed)
         # to convert token embeddings to logits, we use a linear layer
-        self.lm_head = nn.Linear(n_embed, n_vocab)
+        self.lm_head = nn.Linear(64, n_vocab)
         # self attention head
-        self.sa_head = Head(n_embed, n_head, block_size)
+        # self.sa_heads = Head(n_embed, n_head, block_size)
+        # multi head attention
+        self.sa_heads = MultiHeadAttention(4, n_embed // 4)
 
     def forward(self, idx: torch.Tensor, targets=None):
         B, T = idx.shape
@@ -118,7 +130,7 @@ class BigramLanguageModel(nn.Module):
         x = token_embeddings + position_embeddings
         
         # pass through attention head
-        x = self.sa_head(x)
+        x = self.sa_heads(x)
         logits = self.lm_head(x) # (B, T, n_vocab)
         
         if targets is None:
