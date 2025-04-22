@@ -6,9 +6,9 @@ from torch.nn import functional as F
 seed = 1337
 batch_size = 32 # how many independent sequences will we process in parallel?
 block_size = 8 # what is the maximum context length for predictions?
-max_iters = 3000
-eval_interval = 300
-learning_rate = 1e-2
+max_iters = 5000
+eval_interval = 500
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 # ------------
@@ -23,6 +23,7 @@ with open('input.txt', 'r', encoding='utf-8') as f:
 chars = sorted(list(set(text)))
 n_vocab = len(chars)
 n_embed = n_vocab
+n_head = n_embed
 # create a mapping from characters to integers
 char2idx = { ch: i for i, ch in enumerate(chars) }
 idx2char = { i: ch for i, ch in enumerate(chars) }
@@ -60,6 +61,37 @@ def estimate_loss():
     model.train()
     return out
 
+class Head(nn.Module):
+    """
+        One head of self-attention
+    """
+    
+    def __init__(self, n_embed, head_size, block_size):
+        super().__init__()
+        
+        self.key = nn.Linear(n_embed, head_size, bias=False)
+        self.value = nn.Linear(n_embed, head_size, bias=False)
+        self.query = nn.Linear(n_embed, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        
+    def forward(self, x: torch.Tensor):
+        B, T, C = x.shape
+        
+        k: torch.Tensor = self.key(x) # (B, T, head_size)
+        q: torch.Tensor = self.query(x) # (B, T, head_size)
+        
+        # computer attention scores, affinities or weights
+        
+        wei: torch.Tensor = q @ k.transpose(-2, -1) * C ** 0.5 # (B, T, head_size) @ (B, head_size, T) ---> (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        
+        # perform weighted aggregation of the values
+        v = self.value(x) # (B, T, head_size)
+        out = wei @ v # (B, T, T) @ (B, T, head_size) ---> (B, T, head_size)
+        return out
+        
+
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
 
@@ -73,6 +105,8 @@ class BigramLanguageModel(nn.Module):
         self.position_embedding_table = nn.Embedding(block_size, n_embed)
         # to convert token embeddings to logits, we use a linear layer
         self.lm_head = nn.Linear(n_embed, n_vocab)
+        # self attention head
+        self.sa_head = Head(n_embed, n_head, block_size)
 
     def forward(self, idx: torch.Tensor, targets=None):
         B, T = idx.shape
@@ -82,6 +116,9 @@ class BigramLanguageModel(nn.Module):
         
         # now x holds the token identity as well as the position
         x = token_embeddings + position_embeddings
+        
+        # pass through attention head
+        x = self.sa_head(x)
         logits = self.lm_head(x) # (B, T, n_vocab)
         
         if targets is None:
@@ -97,8 +134,10 @@ class BigramLanguageModel(nn.Module):
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
+            # crop idx to last block_size tokens (context length)
+            idx_cond = idx[:, -block_size:]
             # get the predictions
-            logits, loss = self(idx)
+            logits, loss = self(idx_cond)
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
             # apply softmax to get probabilities
