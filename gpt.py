@@ -123,6 +123,19 @@ class MultiHeadAttention(nn.Module):
         out = self.proj(out)
         return out
 
+class FeedForward(nn.Module):
+    
+    def __init__(self, n_embed):
+        super().__init__()
+        
+        self.net = nn.Sequential(
+            nn.Linear(n_embed, n_embed),
+            nn.ReLU()
+        )
+        
+    def forward(self, x):
+        return self.net(x)
+    
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
 
@@ -140,6 +153,7 @@ class BigramLanguageModel(nn.Module):
         # self.sa_heads = Head(n_embed, n_head, block_size)
         # multi head attention
         self.sa_heads = MultiHeadAttention(4, n_embed // 4, n_embed)
+        self.ffwd = FeedForward(n_embed)
 
     def forward(self, idx: torch.Tensor, targets=None):
         B, T = idx.shape
@@ -152,6 +166,7 @@ class BigramLanguageModel(nn.Module):
         
         # pass through attention head
         x = self.sa_heads(x)
+        x = self.ffwd(x)
         logits = self.lm_head(x) # (B, T, n_vocab)
         
         if targets is None:
