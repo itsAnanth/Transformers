@@ -1,0 +1,15 @@
+The feed-forward layer at the end of a transformer block serves several critical functions in transformer architectures:
+
+1. **Non-linear transformation**: The feed-forward network (FFN) introduces non-linearity into the model through the ReLU activation function. This is crucial since the attention mechanism itself is primarily a weighted sum operation (linear).
+
+2. **Increased representational capacity**: Notice how the network expands the embedding dimension from `n_embed` to `4 * n_embed` in the first linear layer, processes it through a non-linearity, and then projects it back to the original dimension. This expansion provides the transformer with more parameters and computational capacity to process information.
+
+3. **Position-wise processing**: Unlike the attention mechanism that models relationships between all positions, the feed-forward network operates on each position independently and identically. It helps the model to process the contextual information captured by the attention layer at each position.
+
+4. **Feature transformation**: The feed-forward layer transforms the feature representation at each position, allowing the model to refine and extract more useful features from the attention-weighted representations.
+
+5. **Completing the information flow**: Together with the attention mechanism, the feed-forward network completes the processing pipeline within a transformer block, with attention handling context modeling and the FFN handling feature transformation.
+
+In this specific implementation, the network expands the dimensionality by a factor of 4, which is a common choice in transformer architectures like BERT and GPT. The combination of multi-head attention followed by this feed-forward network creates the powerful representational capability that makes transformers so effective across many natural language processing and other sequence modeling tasks.
+
+Would you like me to explain more about how this feed-forward layer interacts with other components in a transformer block?

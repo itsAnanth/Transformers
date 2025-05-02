@@ -129,12 +129,32 @@ class FeedForward(nn.Module):
         super().__init__()
         
         self.net = nn.Sequential(
-            nn.Linear(n_embed, n_embed),
-            nn.ReLU()
+            nn.Linear(n_embed, 4 * n_embed),
+            nn.ReLU(),
+            nn.Linear(4 * n_embed, n_embed)
         )
         
     def forward(self, x):
         return self.net(x)
+    
+class Block(nn.Module):
+    """ Singular transformer block: communication followed by computation """
+    
+    def __init__(self, n_embed, n_head):
+        super().__init__()
+        
+        # split a single communication channel into smaller ones
+        head_size = n_embed // n_head
+        # communication process
+        self.sa = MultiHeadAttention(n_head, head_size, n_embed)
+        # computation on token wise level
+        self.ffwd = FeedForward(n_embed)
+        
+    def forward(self, x):
+        # residual connections
+        x = x + self.sa(x)
+        x = x + self.ffwd(x)
+        return x
     
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
@@ -149,11 +169,13 @@ class BigramLanguageModel(nn.Module):
         self.position_embedding_table = nn.Embedding(block_size, n_embed)
         # to convert token embeddings to logits, we use a linear layer
         self.lm_head = nn.Linear(n_embed, n_vocab)
-        # self attention head
-        # self.sa_heads = Head(n_embed, n_head, block_size)
-        # multi head attention
-        self.sa_heads = MultiHeadAttention(4, n_embed // 4, n_embed)
-        self.ffwd = FeedForward(n_embed)
+
+        self.blocks = nn.Sequential(
+            Block(n_embed, 4),
+            Block(n_embed, 4),
+            Block(n_embed, 4),
+            Block(n_embed, 4)
+        )
 
     def forward(self, idx: torch.Tensor, targets=None):
         B, T = idx.shape
@@ -165,8 +187,7 @@ class BigramLanguageModel(nn.Module):
         x = token_embeddings + position_embeddings
         
         # pass through attention head
-        x = self.sa_heads(x)
-        x = self.ffwd(x)
+        x = self.blocks(x)
         logits = self.lm_head(x) # (B, T, n_vocab)
         
         if targets is None:
