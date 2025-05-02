@@ -15,7 +15,6 @@ eval_iters = 200
 
 torch.manual_seed(seed)
 
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open('input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
@@ -61,6 +60,25 @@ def estimate_loss():
     model.train()
     return out
 
+"""
+    NOTE: 
+    
+    In attention calculation, the transformer head projects the input embeddings into Q, K and V
+    The dimension of these are defined by "head_size"
+    suppose we have 64 channel embeddings, in single head attention the head_size would be 64 / 1 = 64 as well
+    
+    the paper suggests that instead of having a single attention head, split this 
+    
+    suppose we have 8 heads and 64 embeddings, then for each head head_size would be 64 / 8 = 8
+    so 8 heads perform attention in parallel using Q, K and V projected to 8 dimensional space
+    
+    Then the results from all these heads are concatenated, sometimes after concatenation the embedding dimension
+    of the result need not match, to avoid this we project it using a final linear layer back to original embedding dim
+    
+    The advantage is that each head can focus on different aspects of the input data
+    effectively allowing the model to attend to different representation subspaces simultaneously
+"""
+
 class Head(nn.Module):
     """
         One head of self-attention
@@ -83,8 +101,8 @@ class Head(nn.Module):
         # computer attention scores, affinities or weights
         
         wei: torch.Tensor = q @ k.transpose(-2, -1) * C ** 0.5 # (B, T, head_size) @ (B, head_size, T) ---> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-        wei = F.softmax(wei, dim=-1)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # casual self attention masking
+        wei = F.softmax(wei, dim=-1) # normalize
         
         # perform weighted aggregation of the values
         v = self.value(x) # (B, T, head_size)
