@@ -1,17 +1,17 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from dataclasses import dataclass
 
 # hyperparameters
 seed = 1337
-batch_size = 32 # how many independent sequences will we process in parallel?
-block_size = 8 # what is the maximum context length for predictions?
+
 max_iters = 5000
 eval_interval = 500
-learning_rate = 1e-3
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-dropout = 0.2
+
 # ------------
 
 torch.manual_seed(seed)
@@ -22,8 +22,7 @@ with open('input.txt', 'r', encoding='utf-8') as f:
 # here are all the unique characters that occur in this text
 chars = sorted(list(set(text)))
 n_vocab = len(chars)
-n_embed = n_vocab
-n_head = n_embed
+
 # create a mapping from characters to integers
 char2idx = { ch: i for i, ch in enumerate(chars) }
 idx2char = { i: ch for i, ch in enumerate(chars) }
@@ -37,13 +36,38 @@ n = int(0.9 * len(data))
 train_data = data[:n]
 val_data = data[n:]
 
+@dataclass
+class GPTConfig:
+    n_vocab: int
+    n_embed: int = 64
+    n_layer: int = 4
+    n_head: int = 4
+    head_size: int = n_embed // n_head
+    dropout: float = 0.2
+    lr: float = 1e-3
+    batch_size: int = 32 # how many independent sequences will we process in parallel?
+    block_size: int = 8 # what is the maximum context length for predictions?
+    
+    def __post_init__(self):
+        self.head_size = self.n_embed // self.n_head
+
+config = GPTConfig(
+    n_vocab=n_vocab,
+    batch_size=64,
+    block_size=256,
+    n_embed=384,
+    n_head=6,
+    n_layer=6,
+    lr=3e-4
+)
+
 # data loading
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
     data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i + block_size] for i in ix])
-    y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
+    ix = torch.randint(len(data) - config.block_size, (config.batch_size,))
+    x = torch.stack([data[i:i + config.block_size] for i in ix])
+    y = torch.stack([data[i + 1:i + config.block_size + 1] for i in ix])
     x, y = x.to(device), y.to(device)
     return x, y
 
@@ -85,15 +109,15 @@ class Head(nn.Module):
         One head of self-attention
     """
     
-    def __init__(self, n_embed, head_size, block_size):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         
-        self.key = nn.Linear(n_embed, head_size, bias=False)
-        self.query = nn.Linear(n_embed, head_size, bias=False)
-        self.value = nn.Linear(n_embed, head_size, bias=False)
-        self.dropout = nn.Dropout(dropout)
+        self.key = nn.Linear(config.n_embed, config.head_size, bias=False)
+        self.query = nn.Linear(config.n_embed, config.head_size, bias=False)
+        self.value = nn.Linear(config.n_embed, config.head_size, bias=False)        
+        self.register_buffer('tril', torch.tril(torch.ones(config.block_size, config.block_size)))
         
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(config.dropout)
         
     def forward(self, x: torch.Tensor):
         B, T, C = x.shape
@@ -106,7 +130,8 @@ class Head(nn.Module):
         wei: torch.Tensor = q @ k.transpose(-2, -1) * k.shape[-1] ** 0.5 # (B, T, head_size) @ (B, head_size, T) ---> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # casual self attention masking
         wei = F.softmax(wei, dim=-1) # normalize
-        
+        # randomly drop some of the affinities to prevent overfitting when it comes to large context windows
+        wei = self.dropout(wei)
         # perform weighted aggregation of the values
         # can think of this as "collecting" the information from the past tokens based on the Value vector weighted by their affinities
         v = self.value(x) # (B, T, head_size)
@@ -116,28 +141,30 @@ class Head(nn.Module):
     
 class MultiHeadAttention(nn.Module):
     """ Multiple heads of self-attention in parallel """
-    def __init__(self, num_heads, head_size, n_embed):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         
-        self.heads = nn.ModuleList([Head(n_embed, head_size, block_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(num_heads * head_size, n_embed)
-        self.dropout = nn.Dropout(dropout)
+        self.heads = nn.ModuleList([Head(config) for _ in range(config.n_head)])
+        # projec the rejoined representation to compatible size n_embed
+        self.proj = nn.Linear(config.n_head * config.head_size, config.n_embed)
+        self.dropout = nn.Dropout(config.dropout)
         
     def forward(self, x):
+        # concatenate along the channel/embed dimension
         out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.proj(out) # (B, T, n_embed)
+        out = self.dropout(self.proj(out)) # (B, T, n_embed)
         return out
 
 class FeedForward(nn.Module):
     
-    def __init__(self, n_embed):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         
         self.net = nn.Sequential(
-            nn.Linear(n_embed, 4 * n_embed),
+            nn.Linear(config.n_embed, 4 * config.n_embed),
             nn.ReLU(),
-            nn.Linear(4 * n_embed, n_embed),
-            nn.Dropout(dropout)
+            nn.Linear(4 * config.n_embed, config.n_embed),
+            nn.Dropout(config.dropout)
         )
         
     def forward(self, x):
@@ -146,46 +173,52 @@ class FeedForward(nn.Module):
 class Block(nn.Module):
     """ Singular transformer block: communication followed by computation """
     
-    def __init__(self, n_embed, n_head):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         
         # split a single communication channel into smaller ones
-        head_size = n_embed // n_head
+        head_size = config.n_embed // config.n_head
         # communication process
-        self.sa = MultiHeadAttention(n_head, head_size, n_embed)
+        self.sa = MultiHeadAttention(config)
         # computation on token wise level
-        self.ffwd = FeedForward(n_embed)
+        self.ffwd = FeedForward(config)
         # layer norm happens along the feature/channel/embed dimension
-        self.ln1 = nn.LayerNorm(n_embed)
-        self.ln2 = nn.LayerNorm(n_embed)
+        self.ln1 = nn.LayerNorm(config.n_embed)
+        self.ln2 = nn.LayerNorm(config.n_embed)
         
     def forward(self, x):
         # residual connections
+        # its better to add dropout before it joins the residual pathway. ie dropout before doing x + dropout<<compute>>
         x = x + self.sa(self.ln1(x)) # (B, T, n_embed)
         x = x + self.ffwd(self.ln2(x)) # (B, T, n_embed)
         
         return x
     
+    
+
+
 # super simple bigram model
 class GPTLanguageModel(nn.Module):
 
-    def __init__(self, n_vocab, n_embed):
+    def __init__(self, config: GPTConfig):
         super().__init__()
+        self.config = config
         # each token directly reads off the logits for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(n_vocab, n_embed)
+        self.token_embedding_table = nn.Embedding(config.n_vocab, config.n_embed)
         # we need to incorporate the position of token in a block/sequence
         # transformers by itself lacks the ability to do this, so we use a position encoding
         # each position in a block has a unique position of n_embed size
-        self.position_embedding_table = nn.Embedding(block_size, n_embed)
-        # to convert token embeddings to logits, we use a linear layer
-        self.lm_head = nn.Linear(n_embed, n_vocab)
+        self.position_embedding_table = nn.Embedding(config.block_size, config.n_embed)
+
 
         self.blocks = nn.Sequential(
-            Block(n_embed, 4),
-            Block(n_embed, 4),
-            Block(n_embed, 4),
-            Block(n_embed, 4)
+            *[Block(config) for _ in range(config.n_layer)],
         )
+        
+        # last layer norm after all transformer blocks
+        self.ln_f = nn.LayerNorm(config.n_embed)
+        # to convert token embeddings to logits, we use a linear layer
+        self.lm_head = nn.Linear(config.n_embed, config.n_vocab)
 
     def forward(self, idx: torch.Tensor, targets=None):
         B, T = idx.shape
@@ -198,6 +231,7 @@ class GPTLanguageModel(nn.Module):
         
         # pass through attention head
         x = self.blocks(x)
+        x = self.ln_f(x)
         logits = self.lm_head(x) # (B, T, n_vocab)
         
         if targets is None:
@@ -214,7 +248,7 @@ class GPTLanguageModel(nn.Module):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # crop idx to last block_size tokens (context length)
-            idx_cond = idx[:, -block_size:]
+            idx_cond = idx[:, -self.config.block_size:]
             # get the predictions
             logits, loss = self(idx_cond)
             # focus only on the last time step
@@ -227,11 +261,12 @@ class GPTLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
-model = GPTLanguageModel(n_vocab, n_embed)
-m = model.to(device)
+model = GPTLanguageModel(config)
+model = model.to(device)
 
-print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
+optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
+print("using config", config)
 print(model)
 # for iter in range(max_iters):
 
@@ -250,4 +285,4 @@ print(model)
 
 # # generate from the model
 # context = torch.zeros((1, 1), dtype=torch.long, device=device)
-# print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+# print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
