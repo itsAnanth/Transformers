@@ -132,6 +132,9 @@ class Head(nn.Module):
         value:
             The actual information shared by the token
             ("This is what i contribute")
+            
+        Q.Ktranspose:
+            Gives us the attention score for each token pair, resulting in a T x T matrix
     """
     
     def __init__(self, config: GPTConfig):
