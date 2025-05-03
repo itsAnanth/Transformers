@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from dataclasses import dataclass
+from typing import Tuple
 
 # hyperparameters
 seed = 1337
@@ -269,7 +270,13 @@ class GPTLanguageModel(nn.Module):
 
         return logits, loss
 
-    def generate(self, idx, max_new_tokens):
+    def generate(self, *idx: Tuple[str | torch.Tensor], max_new_tokens):
+        # convert idx to tensor if its a string
+        idx = [
+           encode(i) if isinstance(i, str) else i.tolist() for i in idx
+        ]
+        idx = torch.tensor(idx, requires_grad=False, device=device)
+            
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # crop idx to last block_size tokens (context length)
@@ -286,7 +293,8 @@ class GPTLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
             
             
-        return idx
+        decoded_output = [decode(idx[i].tolist()) for i in range(idx.shape[0])]
+        return decoded_output, idx
     
     def _get_n_params(self):
         """gets total number of learnable parameters (does not include buffers)"""
