@@ -127,7 +127,7 @@ class Head(nn.Module):
         
         # computer attention scores, affinities or weights
         
-        wei: torch.Tensor = q @ k.transpose(-2, -1) * k.shape[-1] ** 0.5 # (B, T, head_size) @ (B, head_size, T) ---> (B, T, T)
+        wei: torch.Tensor = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5 # (B, T, head_size) @ (B, head_size, T) ---> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # casual self attention masking
         wei = F.softmax(wei, dim=-1) # normalize
         # randomly drop some of the affinities to prevent overfitting when it comes to large context windows
@@ -259,30 +259,33 @@ class GPTLanguageModel(nn.Module):
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
             # append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+            
+            
         return idx
 
-model = GPTLanguageModel(config)
-model = model.to(device)
+if __name__ == "__main__":
+    model = GPTLanguageModel(config)
+    model = model.to(device)
 
-print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
-optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
-print("using config", config)
-print(model)
-# for iter in range(max_iters):
+    print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
+    print("using config", config)
+    print(model)
+    for iter in range(max_iters):
 
-#     if iter % eval_interval == 0:
-#         losses = estimate_loss()
-#         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        if iter % eval_interval == 0:
+            losses = estimate_loss()
+            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-#     # sample a batch of data
-#     xb, yb = get_batch('train')
+        # sample a batch of data
+        xb, yb = get_batch('train')
 
-#     # evaluate the loss
-#     logits, loss = model(xb, yb)
-#     optimizer.zero_grad(set_to_none=True)
-#     loss.backward()
-#     optimizer.step()
+        # evaluate the loss
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
 
-# # generate from the model
-# context = torch.zeros((1, 1), dtype=torch.long, device=device)
-# print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
+    # generate from the model
+    context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
