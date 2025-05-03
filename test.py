@@ -19,3 +19,10 @@ print(f"{(model._get_n_params() / 1e6):.2f} million parameters")
 model.load_state_dict(torch.load("model.pt", map_location='cpu', weights_only=True))
 
 
+text_completion = model.generate("my name ", "how dare", max_new_tokens=100)[0]
+
+for text in text_completion:
+    print(text)
+    print('-' * 50)
+
+
