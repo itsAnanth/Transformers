@@ -11,6 +11,7 @@ eval_interval = 500
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
+dropout = 0.2
 # ------------
 
 torch.manual_seed(seed)
@@ -88,8 +89,10 @@ class Head(nn.Module):
         super().__init__()
         
         self.key = nn.Linear(n_embed, head_size, bias=False)
-        self.value = nn.Linear(n_embed, head_size, bias=False)
         self.query = nn.Linear(n_embed, head_size, bias=False)
+        self.value = nn.Linear(n_embed, head_size, bias=False)
+        self.dropout = nn.Dropout(dropout)
+        
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
         
     def forward(self, x: torch.Tensor):
@@ -100,11 +103,12 @@ class Head(nn.Module):
         
         # computer attention scores, affinities or weights
         
-        wei: torch.Tensor = q @ k.transpose(-2, -1) * C ** 0.5 # (B, T, head_size) @ (B, head_size, T) ---> (B, T, T)
+        wei: torch.Tensor = q @ k.transpose(-2, -1) * k.shape[-1] ** 0.5 # (B, T, head_size) @ (B, head_size, T) ---> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # casual self attention masking
         wei = F.softmax(wei, dim=-1) # normalize
         
         # perform weighted aggregation of the values
+        # can think of this as "collecting" the information from the past tokens based on the Value vector weighted by their affinities
         v = self.value(x) # (B, T, head_size)
         out = wei @ v # (B, T, T) @ (B, T, head_size) ---> (B, T, head_size)
         return out
@@ -117,10 +121,11 @@ class MultiHeadAttention(nn.Module):
         
         self.heads = nn.ModuleList([Head(n_embed, head_size, block_size) for _ in range(num_heads)])
         self.proj = nn.Linear(num_heads * head_size, n_embed)
+        self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.proj(out)
+        out = self.proj(out) # (B, T, n_embed)
         return out
 
 class FeedForward(nn.Module):
@@ -131,7 +136,8 @@ class FeedForward(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(n_embed, 4 * n_embed),
             nn.ReLU(),
-            nn.Linear(4 * n_embed, n_embed)
+            nn.Linear(4 * n_embed, n_embed),
+            nn.Dropout(dropout)
         )
         
     def forward(self, x):
@@ -149,15 +155,19 @@ class Block(nn.Module):
         self.sa = MultiHeadAttention(n_head, head_size, n_embed)
         # computation on token wise level
         self.ffwd = FeedForward(n_embed)
+        # layer norm happens along the feature/channel/embed dimension
+        self.ln1 = nn.LayerNorm(n_embed)
+        self.ln2 = nn.LayerNorm(n_embed)
         
     def forward(self, x):
         # residual connections
-        x = x + self.sa(x)
-        x = x + self.ffwd(x)
+        x = x + self.sa(self.ln1(x)) # (B, T, n_embed)
+        x = x + self.ffwd(self.ln2(x)) # (B, T, n_embed)
+        
         return x
     
 # super simple bigram model
-class BigramLanguageModel(nn.Module):
+class GPTLanguageModel(nn.Module):
 
     def __init__(self, n_vocab, n_embed):
         super().__init__()
@@ -217,26 +227,27 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
-model = BigramLanguageModel(n_vocab, n_embed)
+model = GPTLanguageModel(n_vocab, n_embed)
 m = model.to(device)
 
+print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+print(model)
+# for iter in range(max_iters):
 
-for iter in range(max_iters):
+#     if iter % eval_interval == 0:
+#         losses = estimate_loss()
+#         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-    if iter % eval_interval == 0:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+#     # sample a batch of data
+#     xb, yb = get_batch('train')
 
-    # sample a batch of data
-    xb, yb = get_batch('train')
+#     # evaluate the loss
+#     logits, loss = model(xb, yb)
+#     optimizer.zero_grad(set_to_none=True)
+#     loss.backward()
+#     optimizer.step()
 
-    # evaluate the loss
-    logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
-
-# generate from the model
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+# # generate from the model
+# context = torch.zeros((1, 1), dtype=torch.long, device=device)
+# print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
