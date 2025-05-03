@@ -4,15 +4,9 @@ from torch.nn import functional as F
 from dataclasses import dataclass
 from typing import Tuple
 
-# hyperparameters
+
 seed = 1337
-
-max_iters = 5000
-eval_interval = 500
-
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 200
-
 # ------------
 
 torch.manual_seed(seed)
@@ -37,6 +31,7 @@ n = int(0.9 * len(data))
 train_data = data[:n]
 val_data = data[n:]
 
+# Hyperparameters
 @dataclass
 class GPTConfig:
     n_vocab: int
@@ -45,22 +40,41 @@ class GPTConfig:
     n_head: int = 4
     head_size: int = n_embed // n_head
     dropout: float = 0.2
+    block_size: int = 8 # what is the maximum context length for predictions?
+    
+    # training hyperparameters
+    eval_iters: int = 200
+    max_iters: int = 5000
+    eval_interval = 500
     lr: float = 1e-3
     batch_size: int = 32 # how many independent sequences will we process in parallel?
-    block_size: int = 8 # what is the maximum context length for predictions?
     
     def __post_init__(self):
         self.head_size = self.n_embed // self.n_head
 
+# config = GPTConfig(
+#     n_vocab=n_vocab,
+#     batch_size=64,
+#     block_size=256,
+#     n_embed=384,
+#     n_head=6,
+#     n_layer=6,
+#     lr=3e-4
+# )
+
+# min gpt config ~200k params (can't run the full model, no gpu :-( )
 config = GPTConfig(
     n_vocab=n_vocab,
-    batch_size=64,
-    block_size=256,
-    n_embed=384,
-    n_head=6,
-    n_layer=6,
-    lr=3e-4
+    batch_size=32,
+    block_size=8,
+    n_embed=n_vocab,
+    n_head=4,
+    n_layer=4,
+    lr=3e-4,
+    max_iters=500
 )
+
+# ------------
 
 # data loading
 def get_batch(split):
@@ -77,8 +91,8 @@ def estimate_loss():
     out = {}
     model.eval()
     for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
+        losses = torch.zeros(config.eval_iters)
+        for k in range(config.eval_iters):
             X, Y = get_batch(split)
             logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -308,13 +322,13 @@ if __name__ == "__main__":
     model = GPTLanguageModel(config)
     model = model.to(device)
 
-    print(model._get_n_params() / 1e6, 'M parameters')
+    print(f"{(model._get_n_params() / 1e6):.2f} million parameters")
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
     print("using config", config)
     print(model)
-    for iter in range(max_iters):
+    for iter in range(config.max_iters):
 
-        if iter % eval_interval == 0:
+        if iter % config.eval_interval == 0:
             losses = estimate_loss()
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
@@ -328,5 +342,5 @@ if __name__ == "__main__":
         optimizer.step()
 
     # generate from the model
-    context = torch.zeros((1, 1), dtype=torch.long, device=device)
-    print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
+    context = torch.zeros((1,), dtype=torch.long, device=device)
+    print(model.generate(context, max_new_tokens=500)[0])
