@@ -107,6 +107,16 @@ def estimate_loss():
 class Head(nn.Module):
     """
         One head of self-attention
+        
+        query: 
+            the current token under consideration 
+            ("what am i looking for?" - the token probably lol)
+        key: 
+            what the token contains and how relevant it is to other tokens
+            ("This is what i offer" - the token)
+        value:
+            The actual information shared by the token
+            ("This is what i contribute")
     """
     
     def __init__(self, config: GPTConfig):
@@ -126,16 +136,30 @@ class Head(nn.Module):
         q: torch.Tensor = self.query(x) # (B, T, head_size)
         
         # computer attention scores, affinities or weights
-        
         wei: torch.Tensor = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5 # (B, T, head_size) @ (B, head_size, T) ---> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # casual self attention masking
+        # casual self attention masking
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) 
+        
+        """
+            why normalize?
+            it generates a probability distribution over the attention score of tokens of a particular row
+            at the position (i, j) of the TxT attention score matrix
+            it tells us how much the token i attends to token j between the range 0-1
+            ()"what percentage of attention should be paid to each token.")
+        """
         wei = F.softmax(wei, dim=-1) # normalize
         # randomly drop some of the affinities to prevent overfitting when it comes to large context windows
         wei = self.dropout(wei)
-        # perform weighted aggregation of the values
-        # can think of this as "collecting" the information from the past tokens based on the Value vector weighted by their affinities
         v = self.value(x) # (B, T, head_size)
+        
+        # perform weighted aggregation of the values
         out = wei @ v # (B, T, T) @ (B, T, head_size) ---> (B, T, head_size)
+        
+        """
+            out is the contextualized representation
+            aggregation of information from all the tokens in the past including itself
+            scaled by the attention score
+        """
         return out
         
     
@@ -177,7 +201,8 @@ class Block(nn.Module):
         super().__init__()
         
         # split a single communication channel into smaller ones
-        head_size = config.n_embed // config.n_head
+        # head_size = config.n_embed // config.n_head
+        
         # communication process
         self.sa = MultiHeadAttention(config)
         # computation on token wise level
@@ -229,7 +254,7 @@ class GPTLanguageModel(nn.Module):
         # now x holds the token identity as well as the position
         x = token_embeddings + position_embeddings
         
-        # pass through attention head
+        # pass through all transformer blocks (layers) sequentially
         x = self.blocks(x)
         x = self.ln_f(x)
         logits = self.lm_head(x) # (B, T, n_vocab)
@@ -262,12 +287,20 @@ class GPTLanguageModel(nn.Module):
             
             
         return idx
+    
+    def _get_n_params(self):
+        """gets total number of learnable parameters (does not include buffers)"""
+        return sum(p.numel() for p in self.parameters())
+    
+    def _get_model_size(self):
+        """returns size of the model weights file including buffers"""
+        return sum([tensor.numel() * tensor.element_size() for key, tensor in self.state_dict().items()]) / (1024 ** 2)
 
 if __name__ == "__main__":
     model = GPTLanguageModel(config)
     model = model.to(device)
 
-    print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
+    print(model._get_n_params() / 1e6, 'M parameters')
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
     print("using config", config)
     print(model)
