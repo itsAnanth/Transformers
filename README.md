@@ -1,6 +1,6 @@
 # Transformers
 
-Lightweight implementation of GPT-2 decoder only transformer architecture based on the makemore series by **Andrej Karpathy**
+Lightweight implementation of GPT-2 decoder only transformer architecture based on the makemore series by **Andrej Karpathy**.
 
 
 The main file is `gpt.py`
